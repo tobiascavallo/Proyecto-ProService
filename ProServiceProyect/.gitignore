@@ -1,0 +1,15 @@
+# Variables de entorno con credenciales reales (se versiona solo .env.example).
+.env
+
+# Binarios compilados.
+*.exe
+/backend/backend
+/backend/main
+
+# Dependencias vendorizadas.
+/vendor/
+
+# Editores.
+.idea/
+.vscode/
+.DS_Store
