@@ -25,7 +25,7 @@ El sistema **no intermedia la contratación**: no gestiona presupuestos, ni pago
 
 - **Lenguaje:** Go 1.22+
 - **Framework HTTP:** Gin (`github.com/gin-gonic/gin`)
-- **Base de datos:** MongoDB (driver oficial `go.mongodb.org/mongo-driver/mongo`)
+- **Base de datos:** MongoDB (driver oficial `go.mongodb.org/mongo-driver/v2/mongo`)
 - **Autenticación:** Google OAuth como único método de identidad + JWT propio (access + refresh) emitido por el backend
 - **Entornos:** el servidor se levanta en HTTP plano durante todo el desarrollo local. HTTPS queda estrictamente reservado a la configuración del servidor en producción.
 
@@ -228,3 +228,5 @@ backend/
 ```
 
 En el CLAUDE.md quedan las reglas que aplican a todo (arquitectura en capas, convenciones, manejo de errores, verificación) y punteros del tipo "antes de tocar el modelo de datos, leé `docs/modelo-datos.md`".
+
+Agregá una sección de Testing: los services se entregan siempre con su archivo \_test.go, mocks a mano sin librerías de generación, sin conexión real a Mongo, table-driven. Repositories y models no se testean. El comando de verificación pasa a ser go build ./... && go vet ./... && go test ./....

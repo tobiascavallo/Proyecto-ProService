@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -11,12 +12,14 @@ import (
 // una sola vez al arrancar y se inyecta a quien la necesite, para evitar
 // llamadas a os.Getenv dispersas por todo el código.
 type Config struct {
-	Port           string
-	MongoURI       string
-	MongoDB        string
-	JWTSecret      string
-	GoogleClientID string
-	CORSOrigin     string
+	Port            string
+	MongoURI        string
+	MongoDB         string
+	JWTSecret       string
+	GoogleClientID  string
+	CORSOrigin      string
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
 }
 
 // Load lee el archivo .env si existe y arma el Config. Corta la ejecución de
@@ -29,12 +32,14 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:           getEnv("PORT", "8080"),
-		MongoURI:       mustEnv("MONGO_URI"),
-		MongoDB:        mustEnv("MONGO_DB"),
-		JWTSecret:      mustEnv("JWT_SECRET"),
-		GoogleClientID: mustEnv("GOOGLE_CLIENT_ID"),
-		CORSOrigin:     mustEnv("CORS_ORIGIN"),
+		Port:            getEnv("PORT", "8080"),
+		MongoURI:        mustEnv("MONGO_URI"),
+		MongoDB:         mustEnv("MONGO_DB"),
+		JWTSecret:       mustEnv("JWT_SECRET"),
+		GoogleClientID:  mustEnv("GOOGLE_CLIENT_ID"),
+		CORSOrigin:      mustEnv("CORS_ORIGIN"),
+		AccessTokenTTL:  durationEnv("ACCESS_TOKEN_TTL", 15*time.Minute),
+		RefreshTokenTTL: durationEnv("REFRESH_TOKEN_TTL", 7*24*time.Hour),
 	}
 }
 
@@ -54,4 +59,20 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// durationEnv parsea una duración en formato Go ("15m", "168h"). Si la variable
+// está vacía usa el fallback; si está pero es inválida corta el arranque, para
+// no emitir tokens con una expiración silenciosamente incorrecta.
+func durationEnv(key string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Fatalf("environment variable %s is not a valid duration: %v", key, err)
+	}
+	return parsed
 }
