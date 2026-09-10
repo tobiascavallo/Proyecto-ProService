@@ -5,8 +5,10 @@ import (
 	"log"
 
 	"backend/config"
+	"backend/database"
 	"backend/handlers"
 	"backend/middleware"
+	"backend/models"
 	"backend/repositories"
 	"backend/services"
 	"backend/utils"
@@ -20,9 +22,10 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// Se corta el arranque si Mongo no responde: preferible fallar acá a levantar
-	// el servidor y recién enterarse del problema con la primera petición real.
-	mongoClient, err := config.ConnectMongo(context.Background(), cfg.MongoURI)
+	// Arranque: conectar a Mongo con ping, crear índices y sembrar el catálogo,
+	// y recién ahí levantar el server. Si algo falla, cortar con error claro en
+	// vez de arrancar a medias.
+	mongoClient, err := database.Connect(context.Background(), cfg.MongoURI)
 	if err != nil {
 		log.Fatalf("failed to connect to mongo: %v", err)
 	}
@@ -31,6 +34,15 @@ func main() {
 			log.Printf("error disconnecting from mongo: %v", err)
 		}
 	}()
+
+	db := mongoClient.Database(cfg.MongoDB)
+
+	if err := database.EnsureIndexes(context.Background(), db); err != nil {
+		log.Fatalf("failed to ensure indexes: %v", err)
+	}
+	if err := database.SeedSpecialties(context.Background(), db); err != nil {
+		log.Fatalf("failed to seed specialties: %v", err)
+	}
 
 	router := gin.New()
 
@@ -51,13 +63,19 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	db := mongoClient.Database(cfg.MongoDB)
-
 	// Wiring por entidad: repository -> service -> handler. Cada capa recibe la
 	// de abajo como interfaz.
 	userRepository := repositories.NewUserRepository(db)
 	userService := services.NewUserService(userRepository)
 	userHandler := handlers.NewUserHandler(userService)
+
+	specialtyRepository := repositories.NewSpecialtyRepository(db)
+	specialtyService := services.NewSpecialtyService(specialtyRepository)
+	specialtyHandler := handlers.NewSpecialtyHandler(specialtyService)
+
+	workerRepository := repositories.NewWorkerRepository(db)
+	workerService := services.NewWorkerService(workerRepository, specialtyRepository, userService)
+	workerHandler := handlers.NewWorkerHandler(workerService)
 
 	// El verificador de Google baja y cachea las claves públicas al arrancar;
 	// se corta si eso falla.
@@ -68,15 +86,23 @@ func main() {
 	authService := services.NewAuthService(googleVerifier, userService, cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	authHandler := handlers.NewAuthHandler(authService)
 
-	// Rutas pre-login: sin RequireAuth, porque son el paso previo a tener token.
+	// Rutas públicas: sin RequireAuth. Login (pre-token), catálogo de
+	// especialidades y directorio de workers (los consulta el invitado).
 	public := router.Group("/api/v1")
 	authHandler.RegisterRoutes(public)
+	specialtyHandler.RegisterRoutes(public)
+	workerHandler.RegisterPublicRoutes(public)
 
-	// Rutas que exigen JWT válido. Las rutas públicas del directorio de workers
-	// irán en otro grupo, también fuera de este middleware.
+	// Rutas que exigen JWT válido.
 	protected := router.Group("/api/v1")
 	protected.Use(middleware.RequireAuth(cfg.JWTSecret))
 	userHandler.RegisterRoutes(protected)
+	workerHandler.RegisterProtectedRoutes(protected)
+
+	// Rutas de moderación: JWT válido + rol admin.
+	admin := router.Group("/api/v1")
+	admin.Use(middleware.RequireAuth(cfg.JWTSecret), middleware.RequireRole(string(models.RoleAdmin)))
+	workerHandler.RegisterAdminRoutes(admin)
 
 	addr := ":" + cfg.Port
 	log.Printf("server listening on %s", addr)

@@ -84,6 +84,20 @@ func (r *UserRepository) Update(ctx context.Context, user *models.User) error {
 	return err
 }
 
+// SetRole cambia solo el rol de un usuario. Se usa cuando un usuario crea su
+// perfil profesional y pasa a worker: no hace falta traer y reescribir el
+// documento entero para tocar un campo.
+func (r *UserRepository) SetRole(ctx context.Context, id bson.ObjectID, role models.Role) error {
+	ctx, cancel := context.WithTimeout(ctx, userQueryTimeout)
+	defer cancel()
+
+	_, err := r.collection.UpdateOne(ctx,
+		bson.M{"_id": id},
+		bson.M{"$set": bson.M{"role": role}},
+	)
+	return err
+}
+
 // Delete elimina definitivamente un usuario. La colección users no tiene baja
 // lógica en el modelo de datos (a diferencia de workers).
 func (r *UserRepository) Delete(ctx context.Context, id bson.ObjectID) error {

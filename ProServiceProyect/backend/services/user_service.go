@@ -23,6 +23,7 @@ type UserRepository interface {
 	FindByID(ctx context.Context, id bson.ObjectID) (*models.User, error)
 	FindByGoogleID(ctx context.Context, googleID string) (*models.User, error)
 	Update(ctx context.Context, user *models.User) error
+	SetRole(ctx context.Context, id bson.ObjectID, role models.Role) error
 	Delete(ctx context.Context, id bson.ObjectID) error
 }
 
@@ -113,6 +114,17 @@ func (s *UserService) UpdateProfile(ctx context.Context, id bson.ObjectID, name,
 	}
 
 	return user, nil
+}
+
+// PromoteToWorker pone el rol del usuario en worker. Lo llama WorkerService al
+// crear un perfil profesional: el rol vive en el user para que el próximo token
+// emitido lo lleve. No valida que exista el perfil —de eso se encarga el caller.
+func (s *UserService) PromoteToWorker(ctx context.Context, userID bson.ObjectID) error {
+	if err := s.repo.SetRole(ctx, userID, models.RoleWorker); err != nil {
+		log.Printf("user service: promote to worker failed: %v", err)
+		return err
+	}
+	return nil
 }
 
 // Delete elimina un usuario existente. Devuelve ErrNotFound si ya no está,

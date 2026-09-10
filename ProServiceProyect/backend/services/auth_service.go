@@ -19,7 +19,7 @@ type GoogleVerifier interface {
 	Verify(ctx context.Context, idToken string) (utils.GoogleIdentity, error)
 }
 
-//Iterfaz
+// Iterfaz
 // UserProvider es lo que AuthService necesita de la gestión de usuarios.
 // Lo cumple *UserService.
 type UserProvider interface {

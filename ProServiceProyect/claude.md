@@ -13,7 +13,7 @@ El sistema **no intermedia la contratación**: no gestiona presupuestos, ni pago
 | **Invitado**      | Sin autenticación                           | Buscar y filtrar trabajadores, ver perfiles completos, ver datos de contacto                                                                             |
 | **Cliente**       | Google OAuth                                | Todo lo del invitado + calificar, comentar y marcar favoritos                                                                                            |
 | **Trabajador**    | Google OAuth                                | Todo lo del invitado + marcar favoritos + gestionar su propio perfil profesional. **No puede calificar ni comentar** a otros trabajadores ni a sí mismo. |
-| **Administrador** | Google OAuth (rol asignado a mano en la DB) | Aprobar o rechazar especialidades pendientes, dar de baja perfiles y reseñas                                                                             |
+| **Administrador** | Google OAuth (rol asignado a mano en la DB) | Moderar: dar de baja perfiles y eliminar reseñas                                                                                                         |
 
 **Regla de oro de autorización:** el rol **nunca viaja desde el frontend**. Siempre se lee del JWT en el backend, dentro del middleware o del handler (`c.Get("role")`). El frontend puede decodificar el token localmente para decidir qué botones mostrar, pero eso es UI, nunca autorización.
 
@@ -25,7 +25,7 @@ El sistema **no intermedia la contratación**: no gestiona presupuestos, ni pago
 
 - **Lenguaje:** Go 1.22+
 - **Framework HTTP:** Gin (`github.com/gin-gonic/gin`)
-- **Base de datos:** MongoDB (driver oficial `go.mongodb.org/mongo-driver/v2/mongo`)
+- **Base de datos:** MongoDB (driver oficial `go.mongodb.org/mongo-driver/v2/mongo`). Los IDs se tipan como `bson.ObjectID` (v2), **no** `primitive.ObjectID` (v1).
 - **Autenticación:** Google OAuth como único método de identidad + JWT propio (access + refresh) emitido por el backend
 - **Entornos:** el servidor se levanta en HTTP plano durante todo el desarrollo local. HTTPS queda estrictamente reservado a la configuración del servidor en producción.
 
@@ -51,6 +51,7 @@ Flujo de dependencias estricto: **Handler → Service → Repository**. Una capa
 backend/
 ├── main.go            # wiring de dependencias y registro de rutas
 ├── config/            # carga de variables de entorno
+├── database/          # conexión a Mongo, índices y seed del catálogo
 ├── handlers/          # capa HTTP: binding de DTOs, llamada al service, respuesta
 ├── services/          # lógica de negocio pura (no sabe de HTTP ni de Mongo)
 ├── repositories/      # única capa autorizada a ejecutar consultas MongoDB
@@ -76,9 +77,9 @@ Cinco colecciones. Nombres de campos en `snake_case` para bson, `camelCase` para
 
 `_id`, `user_id` (ref a users, único), `bio`, `specialty_ids[]`, `phone`, `contact_email`, `social_links`, `availability_status` (`available` | `busy` | `unavailable`), `availability_schedule`, `photos[]`, `average_rating`, `review_count`, `active`, `created_at`
 
-### `specialties` — catálogo
+### `specialties` — catálogo cerrado
 
-`_id`, `name`, `slug`, `status` (`approved` | `pending`), `created_by`, `created_at`
+`_id`, `name`, `slug`, `created_at`
 
 ### `reviews` — reseñas
 
@@ -101,20 +102,36 @@ El motivo: ordenar los resultados de búsqueda por calificación es una funciona
 - `users.google_id` — único
 - `workers.user_id` — único
 - `workers.specialty_ids` + `average_rating` — para búsqueda filtrada y ordenada
-- `specialties.slug` — único
+- `specialties.slug` — **único**: además de evitar duplicados, es lo que hace idempotente el seed
 - `reviews.worker_id` — para listar reseñas de un perfil
 - `reviews` sobre (`worker_id`, `client_id`) — **único**: un cliente deja una sola reseña por trabajador. Si quiere cambiar su opinión, edita la que ya tiene.
 - `favorites` sobre (`user_id`, `worker_id`) — único
 
 ---
 
+## Catálogo de especialidades
+
+El catálogo es **cerrado**. El trabajador elige de una lista fija y **no puede escribir texto libre**. Es una decisión deliberada: si cada trabajador escribe su oficio a mano, terminás con "Plomero", "plomeria" y "PLOMERO" como tres entradas distintas, y el filtro por especialidad deja de funcionar. Con IDs de un catálogo controlado, filtrar es exacto.
+
+**Cómo se carga:** la colección se **siembra al arrancar la aplicación**, después de conectar a Mongo y antes de levantar el servidor HTTP. El seed vive en `database/` y es **idempotente**: hace upsert por `slug`, así que reiniciar cien veces deja el mismo resultado. **Nunca borra** documentos existentes — si se saca un ítem de la lista del seed, el que ya está en la base se queda, porque puede haber trabajadores asociados.
+
+**Lista inicial** (nombre → slug):
+
+Plomero → `plomero` · Electricista → `electricista` · Gasista matriculado → `gasista-matriculado` · Albañil → `albanil` · Pintor → `pintor` · Carpintero → `carpintero` · Herrero → `herrero` · Techista → `techista` · Cerrajero → `cerrajero` · Vidriero → `vidriero` · Aire acondicionado y refrigeración → `aire-acondicionado` · Service de electrodomésticos → `electrodomesticos` · Durlock → `durlock` · Colocador de pisos → `colocador-de-pisos` · Jardinería y parquización → `jardineria` · Fletes y mudanzas → `fletes-y-mudanzas` · Limpieza → `limpieza` · Reparación de PC y redes → `reparacion-pc` · Mecánico → `mecanico` · Costura y arreglos de ropa → `costura`
+
+**Endpoint público:** `GET /api/v1/specialties` devuelve el catálogo completo, sin autenticación. Lo consumen tanto el formulario de alta del trabajador como los filtros de búsqueda.
+
+**No hay ABM de especialidades en la V1.** Agregar una especialidad se hace modificando la lista del seed y reiniciando. El administrador no gestiona el catálogo.
+
+---
+
 ## Reglas de negocio (V1)
 
-1. **Directorio público.** Buscar, ver perfiles y ver datos de contacto **no requieren autenticación**. Estas rutas van fuera del middleware de auth.
+1. **Directorio público.** Buscar, ver perfiles, ver datos de contacto y consultar el catálogo de especialidades **no requieren autenticación**. Estas rutas van fuera del middleware de auth.
 2. **Autenticación solo para escribir.** Calificar, comentar, marcar favoritos y gestionar el perfil propio exigen JWT válido.
 3. **Solo el rol `client` puede reseñar.** Un trabajador no puede calificar ni comentar, ni a otros trabajadores ni a sí mismo — evita autoreseñas y sabotaje a la competencia. Se valida en el Service leyendo el rol del JWT: si el rol no es `client`, se devuelve `ErrForbidden`. El administrador tampoco reseña; su rol es moderar.
 4. **Una reseña por cliente por trabajador.** Garantizado por el índice único. Si el cliente quiere cambiar su opinión, edita la reseña existente en vez de crear otra. El sistema no verifica que el servicio haya ocurrido realmente, porque no gestiona contrataciones ni pagos: es una decisión consciente del MVP.
-5. **Especialidad "otra".** Si el trabajador no encuentra su especialidad, escribe una nueva. Se guarda con `status: pending` y **no aparece en los filtros públicos** hasta que un administrador la aprueba. El trabajador queda igualmente asociado a ella desde el momento de la carga.
+5. **Especialidades: entre 1 y 3, siempre del catálogo.** El trabajador elige un mínimo de una y un máximo de tres. El Service valida, antes de guardar, que **todos** los `specialty_ids` recibidos existan realmente en la colección y que no vengan repetidos; si alguno no existe, devuelve `ErrValidation`. Esta validación se hace **siempre en el backend**, aunque el frontend muestre un desplegable — un ID inventado nunca debe entrar a la base.
 6. **Ordenamiento por defecto.** Los resultados de búsqueda salen ordenados por `average_rating` descendente.
 7. **Disponibilidad.** El trabajador declara manualmente su estado (`available` / `busy` / `unavailable`) y su horario. El sistema no lo calcula ni lo cambia solo.
 8. **Bajas lógicas.** Los perfiles no se borran físicamente: se marcan con `active: false` y dejan de aparecer en las búsquedas.
@@ -123,10 +140,11 @@ El motivo: ordenar los resultados de búsqueda por calificación es una funciona
 
 ## Alcance: V1 vs V2
 
-**V1 (lo único que se implementa ahora):** registro y perfil de trabajador, catálogo de especialidades con aprobación, reseñas con estrellas y comentario, búsqueda y filtro por especialidad, ordenamiento por calificación, favoritos, disponibilidad, login con Google.
+**V1 (lo único que se implementa ahora):** registro y perfil de trabajador, catálogo cerrado de especialidades sembrado al arrancar, reseñas con estrellas y comentario, búsqueda y filtro por especialidad, ordenamiento por calificación, favoritos, disponibilidad, login con Google, moderación básica del administrador.
 
 **V2 — NO IMPLEMENTAR. Ni siquiera dejar stubs, structs, endpoints comentados o TODOs:**
 
+- **ABM de especialidades para el administrador** y solicitudes de especialidad nueva por parte del trabajador
 - Actor **Empresa Anunciante** y todo el módulo de publicidad
 - Generación de biografías con IA y resumen automático de reseñas (Gemini / OpenAI)
 - Pasarela de pagos, suscripciones premium (MercadoPago / Stripe)
@@ -142,11 +160,11 @@ Los services devuelven **errores de dominio tipados**, definidos como variables 
 
 | Error de dominio  | HTTP | Cuándo                                                                                                 |
 | ----------------- | ---- | ------------------------------------------------------------------------------------------------------ |
-| `ErrValidation`   | 400  | Datos mal formados o fuera de rango (ej. rating 7)                                                     |
+| `ErrValidation`   | 400  | Datos mal formados o fuera de rango (ej. rating 7, especialidad inexistente, más de 3 especialidades)  |
 | `ErrUnauthorized` | 401  | Falta el token o es inválido / expiró                                                                  |
 | `ErrForbidden`    | 403  | Token válido pero el rol o la propiedad del recurso no alcanzan (ej. un trabajador intentando reseñar) |
 | `ErrNotFound`     | 404  | El recurso no existe                                                                                   |
-| `ErrConflict`     | 409  | Violación de unicidad (reseña duplicada, favorito repetido)                                            |
+| `ErrConflict`     | 409  | Violación de unicidad (reseña duplicada, favorito repetido, perfil ya creado)                          |
 | cualquier otro    | 500  | Error inesperado                                                                                       |
 
 **Formato único de respuesta de error**, en todos los endpoints sin excepción:
@@ -162,9 +180,10 @@ Los errores 500 **nunca** exponen el error interno de Mongo o del driver al clie
 ## Configuraciones críticas
 
 - **CORS:** middleware configurado en el router para permitir la comunicación con el frontend. Origen desde variable de entorno, no hardcodeado.
-- **Variables de entorno:** archivo `.env` cargado con `godotenv`. Contiene puerto, URI de Mongo, nombre de la base, JWT secret y Google Client ID. **Nunca hardcodear credenciales.** El `.env` va en `.gitignore` y se versiona un `.env.example` sin valores reales.
+- **Variables de entorno:** archivo `.env` cargado con `godotenv`. Contiene puerto, URI de Mongo, nombre de la base, JWT secret, duraciones de los tokens y Google Client ID. **Nunca hardcodear credenciales.** El `.env` va en `.gitignore` y se versiona un `.env.example` sin valores reales.
 - **Middlewares obligatorios:** recovery (evitar que un panic tire el servidor), logger de peticiones, CORS, y validación de JWT en rutas protegidas.
 - **Timeouts:** todo acceso a MongoDB en los repositories usa `context.WithTimeout`. Sin excepción — sin esto, un problema de red cuelga la aplicación entera.
+- **Arranque:** conectar a Mongo con ping de verificación, crear los índices, sembrar el catálogo de especialidades, y recién ahí levantar el servidor HTTP. Si algo de eso falla, el proceso corta con un error claro en vez de arrancar a medias.
 
 ---
 
@@ -191,15 +210,31 @@ Los errores 500 **nunca** exponen el error interno de Mongo o del driver al clie
 
 ---
 
+## Testing
+
+**Sí se testea:**
+
+- **Services** — es donde vive la lógica de negocio. Con mock del repository, sin conexión a Mongo.
+- **`utils/jwt.go`** — cuatro casos: token válido que devuelve los claims correctos, token expirado, token firmado con otra clave, token con la firma alterada.
+- **Handlers**, pero solo verificando que los errores de dominio se mapeen al código HTTP y al formato de error correctos.
+
+**No se testea:** models, repositories, config, ni funciones de mapeo de DTOs que solo copian campos.
+
+**Cómo:** mocks escritos a mano (structs con campos de función), sin librerías de generación. `testing` de la librería estándar, table-driven. Los errores se verifican con `errors.Is`, nunca comparando strings.
+
+Los tests van en el mismo paquete que el código que prueban (`services/user_service_test.go`), como es convención en Go.
+
+---
+
 ## Verificación obligatoria
 
 Después de **cada** cambio en el backend:
 
 ```bash
-go build ./... && go vet ./...
+go build ./... && go vet ./... && go test ./...
 ```
 
-**No avanzar al siguiente paso si algo no compila.** Si un cambio rompe la compilación, se arregla antes de seguir — nunca se acumulan errores para resolverlos al final.
+**No avanzar al siguiente paso si algo no compila o si un test falla.** Si un cambio rompe algo, se arregla antes de seguir — nunca se acumulan errores para resolverlos al final.
 
 ---
 
@@ -228,5 +263,3 @@ backend/
 ```
 
 En el CLAUDE.md quedan las reglas que aplican a todo (arquitectura en capas, convenciones, manejo de errores, verificación) y punteros del tipo "antes de tocar el modelo de datos, leé `docs/modelo-datos.md`".
-
-Agregá una sección de Testing: los services se entregan siempre con su archivo \_test.go, mocks a mano sin librerías de generación, sin conexión real a Mongo, table-driven. Repositories y models no se testean. El comando de verificación pasa a ser go build ./... && go vet ./... && go test ./....

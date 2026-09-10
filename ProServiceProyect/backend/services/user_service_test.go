@@ -21,6 +21,7 @@ type fakeUserRepository struct {
 	FindByIDFunc       func(ctx context.Context, id bson.ObjectID) (*models.User, error)
 	FindByGoogleIDFunc func(ctx context.Context, googleID string) (*models.User, error)
 	UpdateFunc         func(ctx context.Context, user *models.User) error
+	SetRoleFunc        func(ctx context.Context, id bson.ObjectID, role models.Role) error
 	DeleteFunc         func(ctx context.Context, id bson.ObjectID) error
 }
 
@@ -38,6 +39,10 @@ func (f *fakeUserRepository) FindByGoogleID(ctx context.Context, googleID string
 
 func (f *fakeUserRepository) Update(ctx context.Context, user *models.User) error {
 	return f.UpdateFunc(ctx, user)
+}
+
+func (f *fakeUserRepository) SetRole(ctx context.Context, id bson.ObjectID, role models.Role) error {
+	return f.SetRoleFunc(ctx, id, role)
 }
 
 func (f *fakeUserRepository) Delete(ctx context.Context, id bson.ObjectID) error {
@@ -412,4 +417,39 @@ func TestUserService_Delete(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUserService_PromoteToWorker(t *testing.T) {
+	userID := bson.NewObjectID()
+
+	t.Run("sets the role to worker", func(t *testing.T) {
+		var gotID bson.ObjectID
+		var gotRole models.Role
+		repo := &fakeUserRepository{
+			SetRoleFunc: func(ctx context.Context, id bson.ObjectID, role models.Role) error {
+				gotID, gotRole = id, role
+				return nil
+			},
+		}
+
+		if err := NewUserService(repo).PromoteToWorker(context.Background(), userID); err != nil {
+			t.Fatalf("no esperaba error, recibí %v", err)
+		}
+		if gotID != userID || gotRole != models.RoleWorker {
+			t.Fatalf("SetRole recibió (%s, %q), esperaba (%s, worker)", gotID.Hex(), gotRole, userID.Hex())
+		}
+	})
+
+	t.Run("propagates repository error unchanged", func(t *testing.T) {
+		repo := &fakeUserRepository{
+			SetRoleFunc: func(ctx context.Context, id bson.ObjectID, role models.Role) error {
+				return errBoom
+			},
+		}
+
+		err := NewUserService(repo).PromoteToWorker(context.Background(), userID)
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("esperaba errBoom, recibí %v", err)
+		}
+	})
 }
